@@ -1,28 +1,41 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# from app.auth.routes import router as auth_router
-# from app.exam.routes import router as exam_router
+from app.routes import auth, kb
 from app.db.base import Base
 from app.db.sessions import engine
-# from app.core.config import CORS_ALLOWED_ORIGINS
+from app.core.config import settings
 
+# Import all models to ensure they're registered with Base
+import app.models
+
+# Create tables
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="K-bot API")
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    description="NotebookLM-inspired document learning and examination platform"
+)
 
-# CORS configuration: use origins from configuration (loaded from .env files)
-# ALLOWED_ORIGINS = [o.strip() for o in CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
-
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins= "*",
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# app.include_router(auth_router)
-# app.include_router(exam_router)
+# Register routers
+app.include_router(auth.router)
+app.include_router(kb.router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    print(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} starting...")
+    print("📚 Database connected")
+    print("🔐 JWT authentication enabled")
 
 
 @app.get("/health")

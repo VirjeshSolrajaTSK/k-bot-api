@@ -1,43 +1,100 @@
-# Copilot / AI Agent Instructions for K-bot API
+# Copilot Instructions for K-Bot API
 
-Purpose: Help an AI coding agent quickly understand and work on the K-bot API (FastAPI + SQLAlchemy).
+## System Overview
+K-Bot is a **NotebookLM-inspired document learning and examination platform** with two modes:
+- **Learn Mode**: LLM-powered teaching with citations and analogies from uploaded documents
+- **Quiz Mode**: Deterministic, explainable evaluation using keyword matching + embeddings (minimal LLM)
 
-- **Big picture**: This is a small FastAPI service in `app/`. DB pieces use SQLAlchemy declarative models (`app/db/base.py`) and a session factory (`app/db/sessions.py`). The app boots in `app/main.py` where tables are created at import time.
+**Architecture**: FastAPI backend → PostgreSQL (AWS RDS) + FAISS vector store → S3 document storage → OpenAI/Bedrock for selective LLM tasks.
 
-- **Key files to inspect first**:
-  - `app/main.py` — FastAPI app, CORS middleware, and router includes (currently commented).
-  - `app/db/base.py` — SQLAlchemy `Base`.
-  - `app/db/sessions.py` — DB engine, `SessionLocal`, and `get_db()` generator. Requires `DATABASE_URL` env var.
-  - `requirements.txt` — lists runtime dependencies (FastAPI, uvicorn, SQLAlchemy, psycopg2, passlib, python-jose, python-dotenv, etc.).
+## Current State & Critical Context
+- **Early POC**: Only `app/main.py`, `app/db/base.py`, and `app/db/sessions.py` exist. Most features are unimplemented.
+- **DB Schema Exists**: `DDL.sql` at project root defines full schema (`users`, `knowledge_bases`, `documents`, `chunks`, `quizzes`, `quiz_questions`, `quiz_answers`, `quiz_summaries`) with UUID primary keys and cascading deletes.
+- **Hardcoded DATABASE_URL**: `app/db/sessions.py` has a hardcoded local connection string (`postgresql://suresh:P%40ssw0rd@localhost:5432/k-bot`). Replace with env-based config for production.
+- **Auto-creates tables**: `Base.metadata.create_all(bind=engine)` runs on startup. No Alembic migrations yet — consider adding when models stabilize.
+- **Router stubs**: `app/main.py` has commented imports for `app.auth.routes` and `app.exam.routes` — these directories/files don't exist yet.
 
-- **Critical contextual notes & gotchas**:
-  - Import name mismatch: `app/main.py` imports `from app.db.session import engine` but the actual file is `app/db/sessions.py`. Verify and fix the import or filename before adding code that depends on it.
-  - `Base.metadata.create_all(bind=engine)` is executed on startup in `app/main.py`. This will create DB tables automatically — be careful when modifying this in production-like workflows.
-  - `app/db/sessions.py` will raise a `RuntimeError` if `DATABASE_URL` is not provided. CI or local runs must set this env var or mock it.
-  - `app/auth/` and `app/exam/` exist but are currently empty; `main.py` has commented router includes for these. When adding route modules, place them at `app/auth/routes.py` and `app/exam/routes.py` and then uncomment the `include_router` lines.
+## Target Architecture (from requirements.md)
+Follow this modular structure when building features:
+```
+app/
+├── main.py
+├── core/           # Config, security, DB session logic
+├── models/         # SQLAlchemy models (user, kb, chunk, quiz, etc.)
+├── routes/         # API endpoints (auth, kb, learn, quiz)
+└── services/       # Business logic (parser, chunker, vector_store, examiner, teacher)
+```
 
-- **Project-specific patterns**:
-  - DB session pattern: a `SessionLocal` factory and a `get_db()` generator that yields a session and closes it in `finally` — follow this for new DB-using endpoints.
-  - Router registration: create `APIRouter()` in module `app.<feature>.routes` and then call `app.include_router(...)` from `app/main.py`.
-  - Config is expected under `app.core.config` (commented). Prefer adding config values there (CORS origins, DATABASE_URL parsing) rather than hard-coding into `main.py`.
+## Critical Patterns & Conventions
 
-- **Dev workflows / commands** (examples to run locally):
-  - Run server (development):
-    ``
-    DATABASE_URL=postgresql://user:pass@localhost:5432/db uvicorn app.main:app --reload --port 8000
-    ``
-  - The project uses `python-dotenv` in dependencies; prefer loading secrets from a `.env` file or CI secrets.
+### Database Session Pattern
+- Use `get_db()` generator from `app.db.sessions.py` for FastAPI dependencies:
+  ```python
+  from app.db.sessions import get_db
+  @router.post("/endpoint")
+  def endpoint(db: Session = Depends(get_db)):
+      # db session auto-closed on exit
+  ```
+- SQLAlchemy models inherit from `Base` (declarative_base in `app/db/base.py`).
+- **UUID primary keys**: All models use `id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)` per DDL schema.
 
-- **Auth & security clues**:
-  - Libraries present: `passlib[bcrypt]`, `argon2-cffi`, and `python-jose` — expect password hashing and JWT-based auth. Look for or add authentication helpers under `app/auth/`.
+### Authentication (Planned)
+- JWT-based auth with `python-jose`, `passlib[bcrypt]` for password hashing.
+- Tokens passed via `Authorization: Bearer <token>` header.
+- Routes: `POST /auth/register`, `POST /auth/login`.
 
-- **Integration points**:
-  - Postgres (psycopg2-binary) via `DATABASE_URL` environment variable.
-  - Potential config module `app.core.config` (not present yet) — use it to centralize env parsing and secrets.
+### Document Processing Pipeline (Unimplemented)
+1. **Upload** → S3 storage + DB record in `documents` table
+2. **Parse** → PyMuPDF (PDF), python-docx (DOCX), python-pptx (PPTX), pandas (XLSX)
+3. **Chunk** → Heading-based chunking (preferred), sliding window fallback
+4. **Enrich** → Extract keywords (TF-IDF/RAKE), topic labels, section names → store in `chunks` table with `keywords TEXT[]`
+5. **Index** → FAISS embeddings for retrieval; PostgreSQL remains source of truth
 
-- **When you (the agent) make changes**:
-  - Always run a quick static sanity check: ensure imports point to real files (watch for `session` vs `sessions`).
-  - If you add DB models or make migrations decisions, note that there is no Alembic here; consider `create_all` implications or add migrations with explanation.
-  - When scaffolding routes, include minimal tests or a curl example in the PR description showing the endpoint works with a mocked `DATABASE_URL`.
+### Quiz Evaluation Strategy (Deterministic-first)
+- **Primary**: Keyword matching against expected keywords stored in `chunks.keywords`
+- **Secondary**: Embedding cosine similarity
+- **Fallback**: LLM for hard/ambiguous answers only
+- **Always return**: Score (0.00–1.00), expected keywords, feedback, verdict
 
-If any part above is unclear or you want the document to emphasize other workflows (tests, CI, migrations), tell me which area to expand. I can iterate on this file.
+### API Naming & Structure
+- Prefix routes by domain: `/auth/*`, `/kb/*`, `/learn/*`, `/quiz/*`
+- Return 200 + `{status: "ok"}` for health checks (see `/health` endpoint)
+- Use path parameters for IDs: `/kb/{kb_id}/upload`, `/quiz/{quiz_id}/answer`
+
+## Key Files Reference
+- **`requirements.md`** (project root): Complete feature specs, API contracts, folder structure
+- **`DDL.sql`** (project root): Full PostgreSQL schema with indexes
+- **`app/main.py`**: FastAPI app, CORS config (currently `allow_origins="*"`), startup table creation
+- **`app/db/sessions.py`**: DB engine with `pool_pre_ping=True` for RDS resilience
+- **`requirements.txt`**: Runtime dependencies (FastAPI, SQLAlchemy, psycopg2, JWT libraries)
+
+## Development Workflow
+```bash
+# Start server (hardcoded DB URL in sessions.py for now)
+cd k-bot-api
+uvicorn app.main:app --reload --port 8000
+
+# Apply DDL manually (no migrations yet)
+psql -h localhost -U suresh -d k-bot -f ../DDL.sql
+```
+
+## When Building New Features
+1. **Add SQLAlchemy models** in `app/models/<entity>.py` matching DDL schema (use UUID, relationships, `TEXT[]` for arrays).
+2. **Create routes** in `app/routes/<domain>.py` with `APIRouter()`, then register in `app/main.py` via `app.include_router()`.
+3. **Build services** in `app/services/<feature>.py` for business logic (keep routes thin).
+4. **Config externalization**: Move hardcoded values (DATABASE_URL, CORS origins, S3 buckets) to `app/core/config.py` using `python-dotenv`.
+5. **Add Alembic** when schema stabilizes — currently using `create_all()` which doesn't track migrations.
+
+## Known Issues & Gotchas
+- **Import mismatch fixed**: `app/main.py` imports from `app.db.sessions` (correct).
+- **Hardcoded credentials**: Remove the hardcoded `DATABASE_URL` in `sessions.py` before deploying.
+- **No error handling**: Add try/except for DB operations and validation (Pydantic schemas).
+- **CORS wide open**: `allow_origins="*"` is for dev only — restrict in production.
+- **No tests**: Add pytest + mocking for `get_db()` when writing endpoints.
+
+## Next Immediate Steps (Priority Order)
+1. Implement SQLAlchemy models (`app/models/user.py`, `knowledge_base.py`, `chunk.py`, `quiz.py`)
+2. Build auth system (`app/routes/auth.py`, `app/core/security.py` for JWT)
+3. Add KB upload pipeline (`app/routes/kb.py`, `app/services/parser.py`)
+4. Implement FAISS indexing (`app/services/vector_store.py`)
+5. Build quiz engine (`app/services/examiner.py` with keyword matching logic)

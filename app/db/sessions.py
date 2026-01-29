@@ -1,16 +1,15 @@
 import logging
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-# from app.core.config import DATABASE_URL
+from app.core.config import settings
 
 logger = logging.getLogger("app.db.session")
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 
-DATABASE_URL = "postgresql://virjeshsolraja:@localhost:5432/k-bot"
+DATABASE_URL = settings.DATABASE_URL
 logger.info("Initializing DB session (checking configuration)")
-logger.info("DATABASE_URL present: %s %s", bool(DATABASE_URL), os.getenv("DATABASE_URL"))
+logger.info("DATABASE_URL configured: %s", bool(DATABASE_URL))
 
 if not DATABASE_URL:
     logger.error(
