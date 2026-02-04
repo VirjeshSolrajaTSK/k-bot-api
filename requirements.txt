@@ -9,3 +9,7 @@ pydantic[email]
 pydantic-settings
 python-dotenv
 python-multipart
+pypdf
+python-docx
+python-magic
+aiofiles
