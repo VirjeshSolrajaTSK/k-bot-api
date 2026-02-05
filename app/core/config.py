@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = ["*"]
     
+    # OpenAI
+    OPENAI_API_KEY: str = "your-openai-api-key-here"
+    OPENAI_MODEL: str = "gpt-4o-mini"  # or gpt-4, gpt-3.5-turbo
+    
     # AWS (for future use)
     AWS_REGION: Optional[str] = None
     S3_BUCKET: Optional[str] = None

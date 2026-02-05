@@ -36,6 +36,8 @@ class QuizQuestion(Base):
     quiz_id = Column(UUID(as_uuid=True), ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_id = Column(UUID(as_uuid=True), ForeignKey("chunks.id", ondelete="SET NULL"))
     question_text = Column(Text, nullable=False)
+    correct_answer = Column(Text)  # For answer key
+    options = Column(ARRAY(Text))  # For MCQ options [A, B, C, D]
     difficulty = Column(String(20), nullable=False)
     question_order = Column(Integer, nullable=False)
     

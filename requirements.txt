@@ -13,3 +13,4 @@ pypdf
 python-docx
 python-magic
 aiofiles
+openai

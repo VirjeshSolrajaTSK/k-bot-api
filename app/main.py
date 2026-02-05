@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth, kb
+from app.routes import auth, kb, quiz
 from app.db.base import Base
 from app.db.sessions import engine
 from app.core.config import settings
@@ -29,6 +29,7 @@ app.add_middleware(
 # Register routers
 app.include_router(auth.router)
 app.include_router(kb.router)
+app.include_router(quiz.router)
 
 
 @app.on_event("startup")
