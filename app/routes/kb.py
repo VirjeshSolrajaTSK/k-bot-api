@@ -5,6 +5,7 @@ from typing import List, Optional
 from pathlib import Path
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
@@ -40,6 +41,7 @@ class KBResponse(BaseModel):
     description: Optional[str]
     status: str
     created_at: str
+    documents: Optional[List["DocumentResponse"]] = None
     
     class Config:
         from_attributes = True
@@ -62,6 +64,16 @@ class KBDetailResponse(BaseModel):
 class KBListResponse(BaseModel):
     knowledge_bases: List[KBResponse]
     total: int
+
+
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    filesize: int
+    download_url: str
+
+    class Config:
+        from_attributes = True
 
 
 @router.post("/create", response_model=KBResponse, status_code=status.HTTP_201_CREATED)
@@ -383,17 +395,37 @@ def list_knowledge_bases(
         KnowledgeBase.user_id == current_user.id
     ).order_by(KnowledgeBase.created_at.desc()).all()
     
-    kb_responses = [
-        KBResponse(
-            id=str(kb.id),
-            user_id=str(kb.user_id),
-            title=kb.title,
-            description=kb.description,
-            status=kb.status,
-            created_at=kb.created_at.isoformat()
+    kb_responses = []
+    for kb in kbs:
+        # fetch documents for this KB
+        docs = db.query(Document).filter(Document.kb_id == kb.id).all()
+        doc_list = []
+        for doc in docs:
+            try:
+                p = Path(doc.s3_path)
+                filesize = p.stat().st_size if p.exists() else 0
+            except Exception:
+                filesize = 0
+
+            download_url = f"/kb/{kb.id}/documents/{doc.id}/download"
+            doc_list.append({
+                "id": str(doc.id),
+                "filename": doc.filename,
+                "filesize": filesize,
+                "download_url": download_url
+            })
+
+        kb_responses.append(
+            KBResponse(
+                id=str(kb.id),
+                user_id=str(kb.user_id),
+                title=kb.title,
+                description=kb.description,
+                status=kb.status,
+                created_at=kb.created_at.isoformat(),
+                documents=doc_list
+            )
         )
-        for kb in kbs
-    ]
     
     return KBListResponse(
         knowledge_bases=kb_responses,
@@ -438,6 +470,48 @@ def get_knowledge_base(
         document_count=document_count,
         chunk_count=chunk_count
     )
+
+
+@router.get("/{kb_id}/documents/{doc_id}/download")
+def download_document(
+    kb_id: str,
+    doc_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Download a document belonging to a knowledge base (owner-only).
+    """
+    kb = db.query(KnowledgeBase).filter(
+        KnowledgeBase.id == kb_id,
+        KnowledgeBase.user_id == current_user.id
+    ).first()
+
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base not found"
+        )
+
+    document = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.kb_id == kb.id
+    ).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found"
+        )
+
+    file_path = Path(document.s3_path)
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on server"
+        )
+
+    return FileResponse(path=str(file_path), media_type='application/octet-stream', filename=document.filename)
 
 
 @router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
