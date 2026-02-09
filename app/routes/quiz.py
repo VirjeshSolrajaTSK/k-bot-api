@@ -370,12 +370,37 @@ def submit_quiz_answers(
             if not q:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid question id: {ans.question_id}")
 
-            # MCQ grading - simple normalized equality
+            # MCQ grading - handle stored answer as letter (A/B/C/...) or full text.
             correct = False
             if q.correct_answer is not None:
-                user_norm = ans.user_answer.strip().lower()
-                correct_norm = q.correct_answer.strip().lower()
-                correct = user_norm == correct_norm
+                stored = q.correct_answer.strip()
+
+                # If question has options and stored answer is a single letter (A/B/C...)
+                if q.options and len(stored) == 1 and stored.isalpha():
+                    # Try to map user's submitted value to a letter.
+                    ua = ans.user_answer.strip()
+                    user_letter = None
+
+                    # If user submitted a single letter, use it directly
+                    if len(ua) == 1 and ua.isalpha():
+                        user_letter = ua.upper()
+                    else:
+                        # Otherwise try to find which option text matches the submitted answer
+                        for idx, opt in enumerate(q.options):
+                            if opt and opt.strip().lower() == ua.lower():
+                                user_letter = chr(65 + idx)
+                                break
+
+                    if user_letter:
+                        correct = user_letter.upper() == stored.upper()
+                    else:
+                        # Fallback to text comparison
+                        correct = ua.lower() == stored.lower()
+                else:
+                    # No options or stored answer is full text — compare normalized text
+                    user_norm = ans.user_answer.strip().lower()
+                    correct_norm = stored.lower()
+                    correct = user_norm == correct_norm
 
             score = 1.0 if correct else 0.0
             result_text = "CORRECT" if correct else "WRONG"
