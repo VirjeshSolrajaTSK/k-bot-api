@@ -9,6 +9,7 @@ from app.models.user import User
 from app.models.knowledge_base import KnowledgeBase
 from app.models.chunk import Chunk
 from app.models.quiz import Quiz, QuizQuestion
+from app.models.quiz import QuizAnswer, QuizSummary
 from app.core.security import get_current_user
 from app.services.openai_service import OpenAIService
 
@@ -59,6 +60,31 @@ class AnswerKeyResponse(BaseModel):
 class QuizWithAnswersResponse(BaseModel):
     quiz: QuizResponse
     answer_key: List[AnswerKeyResponse]
+
+
+class AnswerSubmission(BaseModel):
+    question_id: str
+    user_answer: str
+
+
+class SubmitQuizRequest(BaseModel):
+    answers: List[AnswerSubmission]
+
+
+class QuestionResult(BaseModel):
+    question_id: str
+    correct_answer: Optional[str]
+    user_answer: str
+    is_correct: bool
+    score: float
+
+
+class SubmitQuizResponse(BaseModel):
+    quiz_id: str
+    total_questions: int
+    correct_answers: int
+    accuracy: float
+    results: List[QuestionResult]
 
 
 @router.post("/generate", response_model=QuizWithAnswersResponse, status_code=status.HTTP_201_CREATED)
@@ -311,3 +337,91 @@ def get_quiz_answers(
         )
         for q in questions
     ]
+
+@router.post("/{quiz_id}/submit", response_model=SubmitQuizResponse)
+def submit_quiz_answers(
+        quiz_id: str,
+        request: SubmitQuizRequest,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db)
+    ):
+        """
+        Submit answers for a quiz (MCQ only for POC), grade them (correct/wrong),
+        persist `QuizAnswer` rows, create a `QuizSummary`, and return results.
+        """
+        # Verify quiz exists
+        quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+        if not quiz:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Quiz not found")
+
+        # Load questions for the quiz
+        questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz.id).all()
+        question_map = {str(q.id): q for q in questions}
+
+        if not questions:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quiz has no questions")
+
+        results = []
+        correct_count = 0
+
+        # Persist answers
+        for ans in request.answers:
+            q = question_map.get(ans.question_id)
+            if not q:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid question id: {ans.question_id}")
+
+            # MCQ grading - simple normalized equality
+            correct = False
+            if q.correct_answer is not None:
+                user_norm = ans.user_answer.strip().lower()
+                correct_norm = q.correct_answer.strip().lower()
+                correct = user_norm == correct_norm
+
+            score = 1.0 if correct else 0.0
+            result_text = "CORRECT" if correct else "WRONG"
+
+            qa = QuizAnswer(
+                question_id=q.id,
+                user_answer=ans.user_answer,
+                score=score,
+                result=result_text,
+                feedback=None
+            )
+            db.add(qa)
+
+            results.append(QuestionResult(
+                question_id=str(q.id),
+                correct_answer=q.correct_answer,
+                user_answer=ans.user_answer,
+                is_correct=correct,
+                score=score
+            ))
+
+            if correct:
+                correct_count += 1
+
+        db.commit()
+
+        total_questions = len(questions)
+        accuracy = round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0.0
+
+        # Create a quiz summary record
+        summary = QuizSummary(
+            quiz_id=quiz.id,
+            total_questions=total_questions,
+            correct_answers=correct_count,
+            accuracy=accuracy,
+            strength_topics=[],
+            weak_topics=[],
+            system_verdict="COMPLETED"
+        )
+        db.add(summary)
+        db.commit()
+
+        return SubmitQuizResponse(
+            quiz_id=str(quiz.id),
+            total_questions=total_questions,
+            correct_answers=correct_count,
+            accuracy=float(accuracy),
+            results=results
+        )

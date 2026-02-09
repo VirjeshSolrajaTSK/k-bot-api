@@ -244,6 +244,131 @@ async def upload_knowledge_base(
         )
 
 
+@router.post("/{kb_id}/upload", response_model=KBResponse, status_code=status.HTTP_201_CREATED)
+async def upload_to_existing_kb(
+    kb_id: str,
+    files: List[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload files and attach them to an existing knowledge base.
+
+    Protected endpoint - requires JWT authentication.
+    """
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files provided"
+        )
+
+    # Find KB and check ownership
+    kb = db.query(KnowledgeBase).filter(
+        KnowledgeBase.id == kb_id,
+        KnowledgeBase.user_id == current_user.id
+    ).first()
+
+    if not kb:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base not found"
+        )
+
+    # Validate file formats
+    unsupported_files = []
+    for file in files:
+        if not FileProcessor.is_supported(file.filename):
+            unsupported_files.append(file.filename)
+
+    if unsupported_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file formats: {', '.join(unsupported_files)}. "
+                   f"Supported: PDF, DOCX, TXT, MD"
+        )
+
+    # Mark KB processing
+    kb.status = "PROCESSING"
+    db.commit()
+
+    try:
+        user_upload_dir = UPLOAD_DIR / str(current_user.id) / str(kb.id)
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+
+        total_chunks = 0
+
+        for upload_file in files:
+            file_path = user_upload_dir / upload_file.filename
+
+            async with aiofiles.open(file_path, "wb") as buffer:
+                content = await upload_file.read()
+                await buffer.write(content)
+
+            document = Document(
+                kb_id=kb.id,
+                filename=upload_file.filename,
+                s3_path=str(file_path)
+            )
+            db.add(document)
+            db.commit()
+            db.refresh(document)
+
+            try:
+                text, _ = FileProcessor.extract_text(str(file_path))
+
+                if not text.strip():
+                    continue
+
+                chunks = TextChunker.chunk_text(
+                    text=text,
+                    chunk_size=1000,
+                    overlap=200,
+                    source_filename=upload_file.filename
+                )
+
+                for chunk_data in chunks:
+                    chunk = Chunk(
+                        kb_id=kb.id,
+                        document_id=document.id,
+                        text=chunk_data['text'],
+                        topic=chunk_data.get('topic'),
+                        section=chunk_data.get('section'),
+                        page_number=chunk_data.get('page_number'),
+                        keywords=chunk_data.get('keywords'),
+                        source_file=chunk_data.get('source_file')
+                    )
+                    db.add(chunk)
+                    total_chunks += 1
+
+                db.commit()
+
+            except ValueError as e:
+                print(f"Error processing {upload_file.filename}: {str(e)}")
+                continue
+
+        kb.status = "COMPLETED" if total_chunks > 0 else "FAILED"
+        db.commit()
+        db.refresh(kb)
+
+        return KBResponse(
+            id=str(kb.id),
+            user_id=str(kb.user_id),
+            title=kb.title,
+            description=kb.description,
+            status=kb.status,
+            created_at=kb.created_at.isoformat()
+        )
+
+    except Exception as e:
+        kb.status = "FAILED"
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing files: {str(e)}"
+        )
+
+
 @router.get("/list", response_model=KBListResponse)
 def list_knowledge_bases(
     current_user: User = Depends(get_current_user),

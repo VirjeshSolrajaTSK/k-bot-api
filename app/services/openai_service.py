@@ -17,7 +17,7 @@ class OpenAIService:
         self,
         chunks_content: List[Dict[str, str]],
         num_questions: int = 5,
-        difficulty: str = "MEDIUM",
+        difficulty: str = "EASY",
         custom_prompt: Optional[str] = None
     ) -> List[Dict]:
         """
@@ -34,7 +34,7 @@ class OpenAIService:
             {
                 "question_text": str,
                 "correct_answer": str,
-                "options": List[str] (for MCQ) or None (for short answer),
+                "options": List[str] (for MCQ),
                 "difficulty": str,
                 "chunk_index": int  # Index in chunks_content for linking
             }
@@ -90,10 +90,10 @@ class OpenAIService:
     def _build_system_prompt(self, difficulty: str) -> str:
         """Build the system prompt for quiz generation."""
         difficulty_guidelines = {
-            "EASY": "Focus on recall and identification questions. Use simple multiple choice.",
-            "MEDIUM": "Focus on explanation and comparison questions. Mix MCQ and short answers.",
-            "HARD": "Focus on application and reasoning questions. Prefer short answer format.",
-            "MIXED": "Create a mix of easy, medium, and hard questions with varied formats."
+            "EASY": "Focus on recall and identification questions.",
+            "MEDIUM": "Focus on explanation and comparison questions.",
+            "HARD": "Focus on application and reasoning questions.",
+            "MIXED": "Create a mix of easy, medium, and hard questions"
         }
         
         guideline = difficulty_guidelines.get(difficulty, difficulty_guidelines["MEDIUM"])
@@ -104,8 +104,7 @@ Your task is to generate high-quality quiz questions based on provided document 
 Guidelines:
 - {guideline}
 - Questions must be clear, unambiguous, and directly answerable from the content
-- For MCQ questions, provide 4 options (labeled A, B, C, D) with exactly one correct answer
-- For short answer questions, set options to null and provide the expected answer
+- Use simple multiple choice for all difficulty types, provide 4 options (labeled A, B, C, D) with exactly one correct answer
 - Each question should reference specific content from the chunks
 - Ensure questions test understanding, not just memorization
 - Return ONLY valid JSON in the specified format
@@ -115,8 +114,8 @@ Output format:
   "questions": [
     {{
       "question_text": "The question text",
-      "correct_answer": "The correct answer (for MCQ: A/B/C/D, for short: the answer text)",
-      "options": ["Option A text", "Option B text", "Option C text", "Option D text"] or null,
+      "correct_answer": "The correct answer (for MCQ: A/B/C/D)",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text"],
       "difficulty": "EASY|MEDIUM|HARD",
       "chunk_index": 0
     }}
@@ -141,8 +140,8 @@ REQUIREMENTS:
 - Difficulty: {difficulty}
 - Each question must include:
   * question_text (clear and specific)
-  * correct_answer (A/B/C/D for MCQ, or full answer text for short answer)
-  * options (array of 4 options for MCQ, or null for short answer)
+  * correct_answer (A/B/C/D for MCQ)
+  * options (array of 4 options for MCQ)
   * difficulty (EASY, MEDIUM, or HARD)
   * chunk_index (0-based index of the chunk this question is based on)
 """
