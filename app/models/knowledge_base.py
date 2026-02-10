@@ -24,3 +24,4 @@ class KnowledgeBase(Base):
     documents = relationship("Document", back_populates="knowledge_base", cascade="all, delete-orphan")
     chunks = relationship("Chunk", back_populates="knowledge_base", cascade="all, delete-orphan")
     quizzes = relationship("Quiz", back_populates="knowledge_base", cascade="all, delete-orphan")
+    question_bank = relationship("QuestionBank", back_populates="knowledge_base", cascade="all, delete-orphan")

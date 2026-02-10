@@ -15,9 +15,11 @@ from app.models.user import User
 from app.models.knowledge_base import KnowledgeBase
 from app.models.document import Document
 from app.models.chunk import Chunk
+from app.models.question_bank import QuestionBank
 from app.core.security import get_current_user
 from app.utils.file_processor import FileProcessor
 from app.utils.text_chunker import TextChunker
+from app.services.openai_service import OpenAIService
 
 
 router = APIRouter(prefix="/kb", tags=["Knowledge Base"])
@@ -74,6 +76,63 @@ class DocumentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+def _generate_and_save_question_bank(kb_id: str, db: Session) -> bool:
+    """
+    Generate and save question bank for a knowledge base.
+    
+    Args:
+        kb_id: Knowledge base ID
+        db: Database session
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Get all chunks for this KB
+        chunks = db.query(Chunk).filter(Chunk.kb_id == kb_id).all()
+        
+        if not chunks:
+            print(f"No chunks found for KB {kb_id}, skipping question bank generation")
+            return False
+        
+        # Prepare chunk data for OpenAI
+        chunks_content = [
+            {
+                "text": chunk.text,
+                "topic": chunk.topic or "General",
+                "source_file": chunk.source_file or "Unknown"
+            }
+            for chunk in chunks[:100]  # Limit to 100 chunks to stay within context window
+        ]
+        
+        # Generate question bank using OpenAI
+        openai_service = OpenAIService()
+        question_bank_data = openai_service.generate_question_bank(chunks_content)
+        
+        # Save questions to database
+        for difficulty_level, questions in question_bank_data.items():
+            difficulty = difficulty_level.upper()  # EASY, MEDIUM, HARD
+            
+            for q_data in questions:
+                question = QuestionBank(
+                    kb_id=kb_id,
+                    question_text=q_data['question_text'],
+                    correct_answer=q_data['correct_answer'],
+                    options=q_data.get('options'),
+                    difficulty=difficulty
+                )
+                db.add(question)
+        
+        db.commit()
+        print(f"Successfully generated question bank for KB {kb_id}")
+        return True
+        
+    except Exception as e:
+        print(f"Error generating question bank for KB {kb_id}: {str(e)}")
+        db.rollback()
+        return False
 
 
 @router.post("/create", response_model=KBResponse, status_code=status.HTTP_201_CREATED)
@@ -236,6 +295,10 @@ async def upload_knowledge_base(
         db.commit()
         db.refresh(kb)
         
+        # Generate question bank if KB was successfully created
+        if kb.status == "COMPLETED":
+            _generate_and_save_question_bank(str(kb.id), db)
+        
         return KBResponse(
             id=str(kb.id),
             user_id=str(kb.user_id),
@@ -361,6 +424,14 @@ async def upload_to_existing_kb(
         kb.status = "COMPLETED" if total_chunks > 0 else "FAILED"
         db.commit()
         db.refresh(kb)
+        
+        # Regenerate question bank since new content was added
+        if kb.status == "COMPLETED":
+            # First, delete existing question bank for this KB
+            db.query(QuestionBank).filter(QuestionBank.kb_id == kb.id).delete()
+            db.commit()
+            # Generate new question bank
+            _generate_and_save_question_bank(str(kb.id), db)
 
         return KBResponse(
             id=str(kb.id),

@@ -152,3 +152,92 @@ REQUIREMENTS:
         base_prompt += "\n\nReturn your response as valid JSON following the specified format."
         
         return base_prompt
+    
+    def generate_question_bank(
+        self,
+        chunks_content: List[Dict[str, str]]
+    ) -> Dict[str, List[Dict]]:
+        """
+        Generate a question bank with 100 questions (34 Easy, 33 Medium, 33 Hard)
+        from knowledge base chunks for later quiz generation.
+        
+        Args:
+            chunks_content: List of chunk dictionaries with 'text', 'topic', 'source_file'
+            
+        Returns:
+            Dictionary with structure:
+            {
+                "easy": [...],     # 34 easy questions
+                "medium": [...],   # 33 medium questions  
+                "hard": [...]      # 33 hard questions
+            }
+        """
+        # Prepare context from chunks
+        context = self._prepare_context(chunks_content)
+        
+        # Build the prompt for generating question bank
+        system_prompt = """You are an expert quiz creator for educational content.
+Your task is to generate a comprehensive question bank from provided document chunks.
+
+Guidelines:
+- Generate a diverse set of questions covering different aspects of the content
+- Questions must be clear, unambiguous, and directly answerable from the content
+- Use simple multiple choice format with 4 options (labeled A, B, C, D) with exactly one correct answer
+- Each question should reference specific content from the chunks
+- Ensure questions test understanding at various difficulty levels
+- Return ONLY valid JSON in the specified format
+
+Output format:
+{
+  "easy": [
+    {
+      "question_text": "The question text",
+      "correct_answer": "A",
+      "options": ["Option A text", "Option B text", "Option C text", "Option D text"]
+    }
+  ],
+  "medium": [...],
+  "hard": [...]
+}"""
+        
+        user_prompt = f"""Based on the following content, generate a question bank with:
+- 34 EASY questions (focus on recall and identification)
+- 33 MEDIUM questions (focus on explanation and comparison)
+- 33 HARD questions (focus on application and reasoning)
+
+Total: 100 questions covering different topics and aspects of the content.
+
+CONTENT:
+{context}
+
+REQUIREMENTS:
+- Generate exactly 34 EASY, 33 MEDIUM, and 33 HARD questions
+- Each question must include:
+  * question_text (clear and specific)
+  * correct_answer (A/B/C/D for MCQ)
+  * options (array of 4 options for MCQ)
+- Ensure diverse coverage of all topics in the content
+- Questions should not repeat or be too similar
+
+Return your response as valid JSON following the specified format."""
+        
+        # Call OpenAI API
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse response
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            
+            return result
+            
+        except Exception as e:
+            raise ValueError(f"Error generating question bank from OpenAI: {str(e)}")

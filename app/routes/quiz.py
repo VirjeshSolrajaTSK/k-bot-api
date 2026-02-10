@@ -2,6 +2,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel, Field
 
 from app.db.sessions import get_db
@@ -10,6 +11,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.chunk import Chunk
 from app.models.quiz import Quiz, QuizQuestion
 from app.models.quiz import QuizAnswer, QuizSummary
+from app.models.question_bank import QuestionBank
 from app.core.security import get_current_user
 from app.services.openai_service import OpenAIService
 
@@ -94,11 +96,11 @@ def generate_quiz(
     db: Session = Depends(get_db)
 ):
     """
-    Generate a quiz from knowledge base content using OpenAI.
+    Generate a quiz from pre-generated question bank.
     
     This endpoint:
-    1. Retrieves chunks from the specified knowledge base
-    2. Calls OpenAI to generate quiz questions
+    1. Verifies the KB exists and belongs to user
+    2. Fetches random questions from the question bank based on difficulty
     3. Saves the quiz and questions to the database
     4. Returns the quiz with an answer key
     
@@ -114,7 +116,7 @@ def generate_quiz(
         
     Raises:
         HTTPException 404: KB not found or not owned by user
-        HTTPException 400: No chunks available for quiz generation
+        HTTPException 400: No questions available in question bank
         HTTPException 500: Error generating quiz
     """
     # Verify KB exists and belongs to user
@@ -129,54 +131,53 @@ def generate_quiz(
             detail="Knowledge base not found"
         )
     
-    # Retrieve chunks for quiz generation
-    query = db.query(Chunk).filter(Chunk.kb_id == request.kb_id)
-    
-    # Apply topic filter if provided
-    if request.topic_filter:
-        query = query.filter(Chunk.topic.ilike(f"%{request.topic_filter}%"))
-    
-    chunks = query.limit(100).all()  # Limit to 100 chunks for context window
-    
-    if not chunks:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No chunks available for quiz generation. Upload documents first."
-        )
-    
-    # Prepare chunk data for OpenAI
-    chunks_content = [
-        {
-            "text": chunk.text,
-            "topic": chunk.topic or "General",
-            "source_file": chunk.source_file or "Unknown",
-            "chunk_id": str(chunk.id)
-        }
-        for chunk in chunks
-    ]
-    
     try:
-        # Generate questions using OpenAI
-        openai_service = OpenAIService()
-        generated_questions = openai_service.generate_quiz_questions(
-            chunks_content=chunks_content,
-            num_questions=request.num_questions,
-            difficulty=request.difficulty,
-            custom_prompt=request.custom_prompt
-        )
+        # Fetch questions from question bank based on difficulty
+        if request.difficulty == "MIXED":
+            # For MIXED, get proportional questions from each difficulty
+            num_easy = request.num_questions // 3
+            num_medium = request.num_questions // 3
+            num_hard = request.num_questions - num_easy - num_medium
+            
+            easy_questions = db.query(QuestionBank).filter(
+                QuestionBank.kb_id == request.kb_id,
+                QuestionBank.difficulty == "EASY"
+            ).order_by(func.random()).limit(num_easy).all()
+            
+            medium_questions = db.query(QuestionBank).filter(
+                QuestionBank.kb_id == request.kb_id,
+                QuestionBank.difficulty == "MEDIUM"
+            ).order_by(func.random()).limit(num_medium).all()
+            
+            hard_questions = db.query(QuestionBank).filter(
+                QuestionBank.kb_id == request.kb_id,
+                QuestionBank.difficulty == "HARD"
+            ).order_by(func.random()).limit(num_hard).all()
+            
+            selected_questions = easy_questions + medium_questions + hard_questions
+        else:
+            # For specific difficulty, get questions of that difficulty
+            selected_questions = db.query(QuestionBank).filter(
+                QuestionBank.kb_id == request.kb_id,
+                QuestionBank.difficulty == request.difficulty
+            ).order_by(func.random()).limit(request.num_questions).all()
         
-        if not generated_questions:
+        if not selected_questions:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate questions from OpenAI"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No questions available in question bank. The knowledge base may still be processing."
             )
+        
+        if len(selected_questions) < request.num_questions:
+            # If we don't have enough questions, adjust or warn
+            print(f"Warning: Requested {request.num_questions} questions but only {len(selected_questions)} available")
         
         # Create quiz record
         quiz = Quiz(
             kb_id=kb.id,
             user_id=current_user.id,
             difficulty=request.difficulty,
-            num_questions=len(generated_questions)
+            num_questions=len(selected_questions)
         )
         
         db.add(quiz)
@@ -187,20 +188,14 @@ def generate_quiz(
         answer_key = []
         question_responses = []
         
-        for order, q_data in enumerate(generated_questions, 1):
-            # Get chunk reference if provided
-            chunk_index = q_data.get('chunk_index', 0)
-            chunk_id = None
-            if 0 <= chunk_index < len(chunks):
-                chunk_id = chunks[chunk_index].id
-            
+        for order, bank_question in enumerate(selected_questions, 1):
             question = QuizQuestion(
                 quiz_id=quiz.id,
-                chunk_id=chunk_id,
-                question_text=q_data['question_text'],
-                correct_answer=q_data['correct_answer'],
-                options=q_data.get('options'),
-                difficulty=q_data.get('difficulty', request.difficulty),
+                chunk_id=None,  # Not tracking chunk_id for bank questions
+                question_text=bank_question.question_text,
+                correct_answer=bank_question.correct_answer,
+                options=bank_question.options,
+                difficulty=bank_question.difficulty,
                 question_order=order
             )
             
@@ -240,7 +235,9 @@ def generate_quiz(
             answer_key=answer_key
         )
         
-    except ValueError as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating quiz: {str(e)}"

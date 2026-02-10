@@ -4,6 +4,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.document import Document
 from app.models.chunk import Chunk
 from app.models.quiz import Quiz, QuizQuestion, QuizAnswer, QuizSummary
+from app.models.question_bank import QuestionBank
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "QuizQuestion",
     "QuizAnswer",
     "QuizSummary",
+    "QuestionBank",
 ]
