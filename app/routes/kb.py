@@ -20,6 +20,7 @@ from app.core.security import get_current_user
 from app.utils.file_processor import FileProcessor
 from app.utils.text_chunker import TextChunker
 from app.services.openai_service import OpenAIService
+from app.services.teach_builder import TeachingModuleBuilder
 
 
 router = APIRouter(prefix="/kb", tags=["Knowledge Base"])
@@ -298,6 +299,12 @@ async def upload_knowledge_base(
         # Generate question bank if KB was successfully created
         if kb.status == "COMPLETED":
             _generate_and_save_question_bank(str(kb.id), db)
+            # Build teaching modules and concepts (non-blocking best-effort)
+            try:
+                builder = TeachingModuleBuilder(db)
+                builder.build_for_kb(kb.id, force=False)
+            except Exception as e:
+                print(f"Error building teaching modules for KB {kb.id}: {e}")
         
         return KBResponse(
             id=str(kb.id),
@@ -432,6 +439,12 @@ async def upload_to_existing_kb(
             db.commit()
             # Generate new question bank
             _generate_and_save_question_bank(str(kb.id), db)
+            # Build/update teaching modules and concepts (best-effort)
+            try:
+                builder = TeachingModuleBuilder(db)
+                builder.build_for_kb(kb.id, force=False)
+            except Exception as e:
+                print(f"Error building teaching modules for KB {kb.id}: {e}")
 
         return KBResponse(
             id=str(kb.id),
